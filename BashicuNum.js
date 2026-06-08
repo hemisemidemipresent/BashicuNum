@@ -1,33 +1,38 @@
-// don't export internal classes
-// I'd make it a class inside of Matrix if it was possible
-class Column {
-    // this.array - Int[]
-    // this.height - "canonical" length of the column
-    constructor(array) {
+export class Column {
+    #array; // this.array - Int[]
+    #height; // Int - normally when dealing with BMS matrices height is standardized across all columns, so it helps to have an explicit height
+    constructor(array, height) {
         // we **do not presume anything**
-        if (!Array.isArray(array))
-            throw new RangeError("Column input is not a valid column");
+        if (!Array.isArray(array)) throw new RangeError("Column input is not a valid column");
         if (array.length == 0) {
             this.#array = [0];
+            this.#height = 1;
             return;
         }
         let last = Number.MAX_SAFE_INTEGER + 1;
         for (let e of array) {
-            if (e < 0|| e > last || e % 1 != 0)
-                throw new RangeError("Element ${e} of column is not a valid integer");
+            if (e < 0 || e > last || e % 1 != 0) throw new RangeError("Element ${e} of column is not a valid integer");
             last = e;
         }
-        // private properties, public methods
         this.#array = array;
+        if (height) this.#height = height;
+        else this.#height = array.length || 1;
     }
-    // store as little as needed
     get height() {
-        if (this.#array.indexof(0) > -1) return this.#array.indexof(0);
+        return this.#height;
+    }
+    // smallest height in which this column can fit into
+    // (0) has minheight 0
+    minHeight() {
+        if (this.#array.indexOf(0) > -1) return this.#array.indexOf(0);
         return this.#array.length;
     }
     // I guess Matrix needs the column data
     get array() {
         return [...this.#array];
+    }
+    get length() {
+        return this.array.length;
     }
     at(index) {
         return this.#array[index] || 0;
@@ -96,32 +101,48 @@ class Column {
         this.#array.push(element);
     }
     toString(rows) {
-        if (rows && rows < this.height)
+        if (rows && rows < this.minHeight())
             throw new RangeError(
                 `toString(rows=${rows}) islesser than the number of non-zero rows in the column (${this.#array.join(",")})`,
             );
-        // improve this so we aren't setting internal data
-        let output = `(${this.#array.join(",")}`;
-        output += ',0'.repeat((rows - this.height) || 0);
-        return output + ')';
+        if (!rows) rows = this.#array.length;
+        let arr = [];
+        for (let i = 0; i < rows; i++) {
+            arr.push(this.#array[i] || 0);
+        }
+        return `(${arr.join(",")})`;
     }
 }
 // BMS matrix
-class Matrix {
-    // this.columns - Column[] - Array of `Column`s
-    // this.rows - the number of rows this matrix has, e.g. PrSS = 1, PSS = 2, TSS = 3, etc...
+export class Matrix {
+    #columns; // this.columns - Column[] - Array of `Column`s
+    #rows; // the number of rows this matrix has, e.g. PrSS = 1, PSS = 2, TSS = 3, etc...
     constructor(columns) {
-        if (!Array.isArray(columns) && (typeof(columns) !== "Number" || columns < 0 || columns > Number.MAX_SAFE_INTEGER || columns % 1 != 0))
+        if (
+            !Array.isArray(columns) &&
+            (typeof columns !== "Number" || columns < 0 || columns > Number.MAX_SAFE_INTEGER || columns % 1 != 0)
+        )
             throw new Error(`Matrix() constructor called with non-array input ${columns}`);
 
         // Allow to just put in an integer :3
-        if (typeof(columns) === "Number") {
-            this.#columns = Array.from({length: columns}, () => new Column([0]));
+        if (typeof columns === "Number") {
+            this.#columns = Array.from({ length: columns }, () => new Column([0]));
             return;
         }
+
+        // empty matrix
+        if (columns.length == 0) {
+            this.#columns = [];
+            this.#rows = 1;
+            return;
+        }
+
         // if its an array of `Column`s already just throw it in
         if (columns[0] instanceof Column) {
-            this.#columns = columns;
+            // ensure standardization of height
+            const heights = columns.map((col) => col.minHeight());
+            this.#rows = Math.max(...heights) || 1;
+            this.#columns = columns.map((col) => new Column(col.array, this.#rows));
             return;
         }
         // remove trailing zeroes [0,0,0] -> [0]
@@ -131,10 +152,15 @@ class Matrix {
             }
             return col;
         });
-        this.#columns = columns.map((col) => new Column(col));
+        const heights = columns.map((col) => col.length);
+
+        let rows = Math.max(...heights);
+        if (rows <= 0) rows = 1;
+        this.#columns = columns.map((col) => new Column(col, rows));
+        this.#rows = rows;
     }
     get rows() {
-        return Math.max(this.#columns.map(col => col.height), 1);
+        return this.#rows;
     }
 
     // compares this matrix to another matrix
@@ -144,7 +170,6 @@ class Matrix {
     cmp(matrix) {
         if (this.rows > matrix.rows) return 1;
         if (this.rows < matrix.rows) return -1;
-        // if (this.eq(matrix)) return false; // <- infinite loop lolllll
         for (let i = 0; i < Math.min(this.#columns.length, matrix.#columns.length); i++) {
             // i optimised it for you :3
             let cmp = this.#columns[i].cmp(matrix.#columns[i]);
@@ -179,85 +204,83 @@ class Matrix {
 
     // returns whether or not the current matrix is a successor matrix (true) or a limit matrix instead (false)
     isSuccessor() {
-        const lastCol = this.columns.at(-1);
+        const lastCol = this.#columns.at(-1);
         return lastCol.isZero();
     }
 
     // returns the closest limit matrix of the current matrix
     // e.g. (0)(0)(0)(0) -> (0)(1)[3]
     // e.g. (0)(1)(0)(1)(0)(1) -> (0)(1)(1)[2]
-    // if not returns undefined
+    // hopefully doesn't infinite loop but it shouldn't because BMS is well-ordered
     collapse() {
-        const l = this.#columns.length;
-        const maxPatternLength = Math.floor(l / 2);
-        for (let patternLength = 1; patternLength <= maxPatternLength; patternLength++) {
-            const block1 = this.#columns.slice(l - patternLength, l);
+        const rows = this.#rows;
+        let M = new Matrix([new Array(rows + 1).fill(0), new Array(rows + 1).fill(1)]);
 
-            // assert that all elements in the block1 must be greater than the first element in block1 to be a valid block
-            // prevents collapsing things like (0),(1)(0),(1)(0),(1)(0),(1)(0),(1)(0)
-            const suspectedBadRoot = block1[0]; // suspected bad root, even if a patter is found may not be the actual bad root due to ascension
-            let validBlock = true;
-            for (let i = 1; i < patternLength; i++) {
-                if (suspectedBadRoot.gt(block1[i])) {
-                    validBlock = false;
-                    break;
-                }
+        while (true) {
+            let n = 1;
+            while (M.expand(n).lt(this)) {
+                n++;
+                if (n == 1000) console.error("Something has probably gotten very wrong with Matrix.collapse()");
             }
-            if (!validBlock) continue;
-
-            // compares two Column[]s, and see if they are a constant offset apart
-            // for single-length Columns it is guaranteed to be constant, but:
-            // e.g. (0,0)(1,1)(2,1)(3,0)'(1,0)(2,1)(3,1)(4,0) has a constant offset of (1,0)
-            // e.g. (0,0)(1,1)(2,1)(3,0)'(1,0)(2,1)(3,1)(4,1) does not have a constant offset
-            function isValidAscension(block1, block2, ascensionMatrix) {
-                if (block1.height != block2.height) return false; // bruh, maybe even error lowkey
-                if (!ascensionMatrix) ascensionMatrix = block1[0].sub(block2[0]);
-                for (let i = 1; i < block1.height; i++) {
-                    if (!block1[i].sub(block2[i]).eq(ascensionMatrix)) return false;
-                }
-                return true;
-            }
-
-            // checks blocks of length `patternLength` from the back to see if it fits expected pattern
-            const block2 = this.columns.slice(l - patternLength * 2, l - patternLength);
-            if (!isValidAscension(block1, block2)) return false; // otherwise, we have at least 2 blocks that satisfy so we just search for more
-
-            let ascensionMatrix = block1[0].sub(block2[0]);
-            // cant have any negative values:
-            const negativeValues = ascensionMatrix.array.find((x) => x < 0);
-            if (negativeValues) continue;
-
-            let blocksFound = 2;
-            let prevBlock = block2;
-            for (let i = 2; i < Math.floor(l / patternLength); i++) {
-                const currBlock = this.#columns.slice(l - patternLength * (i + 1), l - patternLength * i);
-                if (!isValidAscension(prevBlock, currBlock, ascensionMatrix)) break;
-                blocksFound++;
-            }
-
-            // a pattern is found
-            let indexOfBadRoot = l - patternLength * blocksFound;
-            let badRoot = this.#columns[indexOfBadRoot];
-
-            // TODO: stress test ascension with various bms matrices
-            if (ascensionMatrix.at(ascensionMatrix.length - 1) == 0) ascensionMatrix = ascensionMatrix.addScalar(1);
-            else if (ascensionMatrix.at(ascensionMatrix.length - 1) != 0) {
-                let array = ascensionMatrix.array;
-                while (array.at(-1) == 0) array.pop();
-                array.push(1);
-                ascensionMatrix = new Column(array);
-            }
-            let expander = badRoot.add(ascensionMatrix);
-            let newMatrix = new Matrix(this.#columns.slice(0, l - patternLength * (blocksFound - 1)).concat([expander]));
-            return {
-                newMatrix: newMatrix,
-                n: blocksFound - 1, // change depending on expansion rules
-            };
+            let expanded = M.expand(n);
+            if (expanded.eq(this)) {
+                return {
+                    newMatrix: M,
+                    n: n,
+                };
+            } else M = expanded;
         }
     }
 
     expand(n) {
-        // TODO (unused)
+        const l = this.#columns.length;
+
+        // if ends with (0) column, just pop it off
+        if (this.#columns[l - 1].isZero()) {
+            let newMatrix = [];
+            this.#columns.forEach((c, i) => {
+                if (i < l - 1) newMatrix.push(c);
+            });
+            return new Matrix(newMatrix);
+        }
+
+        // all the indices of columns to check
+        let indices = Array.from({ length: l - 1 }, (_, index) => l - index - 2);
+        for (let row = 0; row < this.rows; row++) {
+            let last = this.#columns[l - 1].at(row);
+            if (last == 0) break;
+            indices = indices.filter((i) => {
+                if (this.#columns[i].at(row) < last) {
+                    last = this.#columns[i].at(row);
+                    return true;
+                }
+            });
+        }
+
+        let badRootIndex = indices[0];
+
+        let badRoot = this.#columns[badRootIndex];
+        let lastColumn = this.#columns[this.#columns.length - 1];
+        let ascensionMatrixArr = lastColumn.sub(badRoot).array;
+        ascensionMatrixArr[ascensionMatrixArr.length - 1] = 0; // replace last entry with 0
+        const ascensionMatrix = new Column(ascensionMatrixArr);
+
+        let goodPart = this.#columns.slice(0, badRootIndex);
+        let badPart = this.#columns.slice(badRootIndex, this.#columns.length - 1);
+
+        // console.log("G:" + goodPart.map((c) => c.toString()).join(""));
+        // console.log("B:" + badPart.map((c) => c.toString()).join(""));
+        // console.log("Δ:" + ascensionMatrix.toString());
+
+        let newMatrix = goodPart.concat(badPart);
+
+        // add n bad roots
+        for (let i = 0; i < n; i++) {
+            badPart = badPart.map((column) => column.add(ascensionMatrix));
+            newMatrix = newMatrix.concat(badPart);
+        }
+
+        return new Matrix(newMatrix);
     }
 
     toString() {
@@ -282,6 +305,8 @@ const THREE_MATRIX = new Matrix([[0], [0], [0]]);
 //
 // the system is set up in a way that all normalized BashicuNumber matrices are successor matrices rather than limit matrices (I think)
 export class BashicuNumber {
+    #matrix;
+    #value;
     constructor(arg1, arg2) {
         if (typeof arg1 == "number") {
             if (arg1 > Number.MAX_SAFE_INTEGER) {
@@ -326,7 +351,7 @@ export class BashicuNumber {
         }
     }
     normalize() {
-        while (this.value >= 10) {
+        while (this.#value >= 10) {
             this.#value = Math.log10(this.#value);
             this.#matrix = this.#matrix.successor();
         }
@@ -362,6 +387,14 @@ export class BashicuNumber {
     }
     gteq(n) {
         return this.cmp(n) > -1;
+    }
+
+    // accessors only here for testing purposes
+    get matrix() {
+        return this.#matrix;
+    }
+    get value() {
+        return this.#value;
     }
 
     add(n) {
@@ -406,8 +439,20 @@ export class BashicuNumber {
     }
     log10() {
         // if empty matrix then just Math.log10
+        if (this.#matrix.toString() == "()") return new BashicuNumber(ZERO_MATRIX, Math.log10(this.value));
         // if matrix is successor (which it should be) just strip off the (0), then:
+        let newMatrix = this.#matrix;
+        if (this.#matrix.isSuccessor()) {
+            newMatrix = this.matrix.expand(1); // just chop off a zero it doesnt matter what n you expand by
+        }
         // if resulting matrix is a limit matrix, expand the limit matrix accordingly
-        // which needs expand() to be coded out first
+        if (!newMatrix.isSuccessor()) {
+            console.log(this.#value);
+            let x = Math.floor(this.#value);
+            let y = this.#value - x;
+            return new BashicuNumber(newMatrix.expand(x), Math.pow(10, y));
+        } else {
+            return new BashicuNumber(newMatrix, this.#value);
+        }
     }
 }
