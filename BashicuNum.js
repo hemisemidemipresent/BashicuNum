@@ -202,10 +202,21 @@ export class Matrix {
         return new Matrix(newCols);
     }
 
-    // returns whether or not the current matrix is a successor matrix (true) or a limit matrix instead (false)
+    // returns whether or not the current matrix is the zero matrix (true) or a larger matrix instead (false)
+    isZero() {
+        return (this.#columns.length == 0);
+    }
+    // returns whether or not the current matrix is a successor matrix (true) or a limit/zero matrix instead (false)
     isSuccessor() {
+        if (this.isZero()) return false;
         const lastCol = this.#columns.at(-1);
         return lastCol.isZero();
+    }
+    // returns whether or not the current matrix is a limit matrix (true) or a successor/zero matrix instead (false)
+    isLimit() {
+        if (this.isZero()) return false;
+        const lastCol = this.#columns.at(-1);
+        return !lastCol.isZero();
     }
 
     // returns the closest limit matrix of the current matrix
@@ -234,9 +245,14 @@ export class Matrix {
 
     expand(n) {
         const l = this.#columns.length;
+        
+        // make the empty matrix expand to itself
+        if (l == 0) {
+            return new Matrix([]);
+        }
 
         // if ends with (0) column, just pop it off
-        if (this.#columns[l - 1].isZero()) {
+        if (this.isSuccessor()) {
             let newMatrix = [];
             this.#columns.forEach((c, i) => {
                 if (i < l - 1) newMatrix.push(c);
